@@ -1,0 +1,533 @@
+<?php
+//отключение вывода ошибок в браузер
+global $user;
+if(empty($user->roles['3']))
+    error_reporting(0);
+else 
+    error_reporting(-1);
+
+//процедура определения доступа к нодам
+function tasks_node_access($node, $op, $account) {
+    global $user;
+    $usr = user_load($user->uid);
+    if(!empty($user->roles['3']))
+        return NODE_ACCESS_ALLOW;    //доступ администраторов в режиме разработки
+    if($node->type == 'tasks') {
+        if($op!='delete'){
+            $find = FALSE;
+            //+ 03.06.13 add authors access
+            if($user->uid == $node->uid) {
+                 return NODE_ACCESS_ALLOW;
+            }
+            if(!empty($node->field_user))
+            for($i=0; $i<count($node->field_user['und']);$i++) {	//цикл по кол-ву явно указанных пользователей
+                $find = ($node->field_user['und'][$i]['uid'] == $usr->uid);
+                if($find) return NODE_ACCESS_ALLOW;
+            }
+            
+            if(!$find) {
+                //определение доступа по группе
+                if(!empty($node->field_user_group) && !empty($usr->field_usr_group))
+                for ($i = 0; $i < count($usr->field_usr_group['und']); $i++) {		
+                    for ($j=0; $j < count($node->field_user_group['und']); $j++) {
+                        $find = ($usr->field_usr_group['und'][$i]['tid'] == $node->field_user_group['und'][$j]['tid']);
+                        if($find)
+                            return NODE_ACCESS_ALLOW;
+                    }
+                }
+            }
+            
+            if($find)
+                return NODE_ACCESS_ALLOW;
+            else 
+                return NODE_ACCESS_DENY;
+        }
+    }
+    return NODE_ACCESS_IGNORE;
+}
+
+//!!!redirect from node to tasks!!! Редирект на нестандартное имя материалов
+function tasks_node_view($node, $view_mode) {
+    if ($node->type == 'tasks')  {
+        //print_r($node);
+        //drupal_goto('tasks/'.$node->nid.'/view');
+        //return tasks_test();
+        //drupal_get_form('task_view_form');
+
+        //die;
+    }
+    else {
+        return $node;
+    }
+}
+
+function tasks_menu(){
+	$tasks_path = 'tasks/%task';
+	$items['tasks/view'] = array( 
+            'title' => 'Задачи', 
+            'page callback' => 'tasks_view_form', 
+            'page arguments' => array(1), 
+            'access callback' => 'tasks_view_form_access',
+            'type' => MENU_LOCAL_TASK, 
+	); 
+	$items['tasks/%node/view'] = array( 		//single task
+            'title' => 'Просмотр', 
+            'page callback' => 'drupal_get_form', 
+            'page arguments' => array('task_view_form'), 
+            'access callback' => 'task_view_form_access',
+            'access arguments' => array(1), 
+            'type' => MENU_LOCAL_TASK, 
+	); 
+	//вместо этого можно использовать функцию tasks_node_alter
+	$items['tasks/%node/edit'] = array( 		//single task
+            'title' => 'Редактирование', 
+            'page callback' => 'drupal_get_form', 
+            'page arguments' => array('task_edit_form'), 
+            'access callback' => 'task_view_form_access',
+            'access arguments' => array(1), 
+            'type' => MENU_LOCAL_TASK, 
+	);
+	return $items;
+}
+
+function tasks_form_alter(&$form, &$form_state, $form_id) {
+    global $user;
+    //drupal_set_message($form_id);
+    //print_r($form);
+    switch($form_id){
+        case 'tasks_node_form':
+            //code
+            //print_r($form);
+            //die;
+            if(empty($user->roles[3])) {
+                $form['field_task_archieve']['#type'] = 'hidden';
+                $form['field_date_delete']['#type'] = 'hidden';
+                $form['field_task_delete']['#type'] = 'hidden';
+                $form['field_task_tegs']['#type'] = 'hidden';	
+                //$form['field_date_delete']['#disabled'] = TRUE;
+            }
+        break;
+    }
+    return $form;
+}
+//+ 02.10.2012
+function task_edit_form($form, &$form_state) {		//форма редактирования 1 задачи
+    $tsk = node_load(arg(1));
+    global $user;
+
+    $form['task'] = array(
+        '#type' => 'fieldset',
+        '#title' => '<strong>'.$tsk->title.'</strong>',
+        '#collapsible' => FALSE,
+    );               
+
+    $form['task']['title'] = array(
+        '#title'=>'Заголовок',
+        '#type'=>'textfield',
+        '#default_value'=> $tsk->title,               
+        '#required'=> TRUE,
+        '#description'=> '',
+        '#disabled' => FALSE,
+        '#size' => 50,
+    );
+    $form['task']['credate'] = array(
+        '#title'=>'Дата создания',
+        '#type'=>'textfield',
+        '#default_value'=> $tsk->field_date_create['und']['0']['value'],               
+        '#required'=> FALSE,
+        '#description'=> '',
+        '#disabled' => TRUE,
+        '#size' => 20,
+    );
+    $timezone = new DateTimeZone('Asia/Yekaterinburg');
+    $dt = substr($tsk->field_date_done['und']['0']['value'],0,10);
+    $dt = str_replace('T',' ',$tsk->field_date_done['und']['0']['value']);
+    $dt = strtotime("+6 hour", strtotime("$dt"));
+    $dt = date('Y-m-d H:i', $dt);
+
+    $form['task']['enddate'] = array(
+        '#title'=>'Дата выполнения',
+        '#type'=>'date_popup',
+        '#default_value' => $dt,
+        '#date_format' =>'Y-m-d H:i',
+        '#date_timezone' => 'Asia/Yekaterinburg',
+        '#required' =>TRUE,
+        '#size' => 20,
+    );
+
+    $usr = user_load($tsk->field_user['und']['0']['uid']);
+    if($tsk->field_user['und']['0']['uid'] == $user->uid) {
+        /** 14.06.12
+        *?add list of possible users
+        */
+        $form['task']['user'] = array(
+            '#title'=>'Пользователь',
+            '#type'=>'textfield',
+            '#required'=> TRUE,
+            '#disabled' => TRUE,
+            '#default_value' => $usr->name,
+            '#size' => 20,
+        );
+    }
+    $options = array();
+    $grp = array();		//group of users
+    /*
+     * !Add 3-d level of items and make standard function to output form!
+     * !Add check on empty value!
+    */
+    foreach($tsk->field_user_group['und'] as $grp) {		//loop task user groups and make array of tids => names
+        $term = taxonomy_term_load($grp['tid']);		//load term
+        $default[] = $grp['tid'];						//remember defaults
+    }
+    //Get parent categories
+    $pars = taxonomy_get_tree(3, 0, 1);		//load a tree of user groups, 1st arg - vocabulary, 2nd - parent under which create list, 3rd - depth, the last arg dropped
+    //taxonomy_get_children($tid, $vid = 0); 
+    foreach ($pars as $parent) {
+        $chlds = taxonomy_get_children($parent->tid);
+        $options[$parent->tid] = $parent->name;
+        if(!empty($chlds)) {
+            foreach($chlds as $child) {
+                $options[$child->tid] = ' - '.$child->name;
+            }
+        }	
+    }
+    unset($pars);
+    $form['task']['user_groups'] = array(
+        '#type' => 'checkboxes',
+        '#options' => $options,
+        '#multiple' => TRUE,
+        '#title' => t('User groups'),
+        '#default_value' => $default,
+        '#description' => t('Назначение групп пользователей. Можно выбрать до 5 значений'),
+        '#size' => 10,
+    );
+    unset($options);
+    unset($term);
+    $options = array();
+    $ctgr = array();
+    foreach($tsk->field_category['und'] as $ctgr) {		//loop task categories and make array of tids => names
+        $term = taxonomy_term_load($ctgr['tid']);		//load term
+        $default[] = $ctgr['tid'];
+    }
+    //Get parent categories
+    $pars = taxonomy_get_tree(2, 0, 1);		//load a tree of categories, 1st arg - vocabulary, 2nd - parent under which create list, 3rd - depth, the last arg dropped
+    foreach ($pars as $parent) {
+        $chlds = taxonomy_get_children($parent->tid);
+        $options[$parent->tid] = $parent->name;
+        if(!empty($chlds)) {
+            foreach($chlds as $child) {
+                $options[$child->tid] = ' - '.$child->name;
+            }
+        }	
+    }
+    unset($pars);
+    $form['task']['categories'] = array(
+        '#type' => 'checkboxes',
+        '#options' => $options,
+        '#multiple' => TRUE,
+        '#title' => t('Categories'),
+        '#default_value' => $default,
+        '#description' => t('Назначение категорий. Можно выбрать до 5 значений, удерживая кнопку ctrl'),
+        '#size' => 10,
+    );
+    unset($term);
+    unset($options);
+    $pars = taxonomy_get_tree(4, 0, 1);	//load queue vocabulary
+    foreach($pars as $par) {
+        $options[$par->tid] = $par->name;
+    }
+    $term = taxonomy_term_load($tsk->field_queue['und'][0]['tid']);
+    $form['task']['queue'] = array(
+        '#type' => 'select',
+        '#options' => $options,
+        '#title' => t('Очередь'),
+        '#default_value' => $tsk->field_queue['und'][0]['tid'],
+        '#description' => t('Текущая очередь задачи'),
+        '#size' => 1,
+    );
+    unset($term);
+    unset($options);
+    $pars = taxonomy_get_tree(6, 0, 1);			//load status vocabulary
+
+    foreach($pars as $par) {
+        $options[$par->tid] = $par->name;
+    }
+    $term = taxonomy_term_load($tsk->field_task_status['und'][0]['tid']);
+
+    $form['task']['status'] = array(
+            '#type' => 'select',
+            '#options' => $options,
+            '#title' => t('Статус'),
+            '#default_value' => $tsk->field_task_status['und'][0]['tid'],
+            '#description' => t('Статус задачи'),
+            '#size' => 1,
+    );
+    $form['task']['save'] = array(
+            '#type' => 'submit',
+            '#value' => t('Сохранить'),
+            '#size' => 1,
+    );
+    return $form;	
+}
+
+function task_edit_form_submit($form,&$form_state) {		//SAVE SINGLE TASK
+    $tsk = node_load(arg(1));
+    $tmp = $form_state['values']['enddate'];
+    $dt = strtotime("-6 hour", strtotime("$tmp"));
+    //$dt = date("Y-m-d\TH:i:sP", $dt);			//with time shift
+    $dt = date("Y-m-d\TH:i:s", $dt);
+
+    $tsk->field_date_done['und']['0']['value'] = $dt;
+    $tsk->changed = strtotime("now");
+    $tsk->title = $form_state['values']['title'];
+    foreach($form_state['values']['categories'] as $ctg) {
+        if($ctg != 0)
+            $tsk->field_category['und'][$ctg] = $ctg;
+    }
+    //преобразование в одномерный простой массив
+    $fug = array();
+    foreach($tsk->field_user_group['und'] as $task)
+            $fug[$task['tid']] = $task['tid'];
+    foreach($form_state['values']['user_groups'] as $ugrp) {
+        if(($ugrp != 0) && (!in_array($ugrp, $fug))	)	
+            $tsk->field_user_group['und'][]['tid'] = $ugrp;
+    }
+}
+
+//+ 02.10.2012 end
+function task_view_form($form, &$form_state) {		//форма для 1 задачи
+    $tsk = node_load(arg(1));
+    global $user;
+    $form['task'] = array(
+        '#type' => 'fieldset',
+        '#title' => '<strong>'.$tsk->title.'</strong>',
+        '#collapsible' => FALSE,
+    );               
+
+    $form['task']['title'] = array(
+        '#title'=>'Заголовок',
+        '#type'=>'textfield',
+        '#default_value'=> $tsk->title,               
+        '#required'=> TRUE,
+        '#description'=> '',
+        '#disabled' => FALSE,
+        '#size' => 50,
+    );
+    $form['task']['credate'] = array(
+        '#title'=>'Дата создания',
+        '#type'=>'textfield',
+        '#default_value'=> date('d-m-Y',$tsk->created),
+        '#required'=> FALSE,
+        '#description'=> '',
+        '#disabled' => TRUE,
+        '#size' => 20,
+    );
+    $timezone = new DateTimeZone('Asia/Yekaterinburg');
+    $dt = substr($tsk->field_date_done['und']['0']['value'],0,10);
+    $dt = str_replace('T',' ',$tsk->field_date_done['und']['0']['value']);
+    //$dt = date('Y-m-d H:i |', strtotime('+6 hours');
+    $dt = strtotime("+6 hour", strtotime("$dt"));
+    $dt = date('Y-m-d H:i', $dt);
+    $form['task']['enddate'] = array(
+        '#title'=>'Дата выполнения',
+        '#type'=>'date_popup',
+        '#default_value' => $dt,
+        '#date_format' =>'Y-m-d H:i',
+        '#date_timezone' => 'Asia/Yekaterinburg',
+        '#required' =>TRUE,
+        '#size' => 20,
+    );
+
+    $usr = user_load($tsk->field_user['und']['0']['uid']);
+    if($tsk->field_user['und']['0']['uid'] == $user->uid) {
+        /** 14.06.12
+        *?add list of possible users
+        */
+        $form['task']['user'] = array(
+            '#title'=>'Пользователь',
+            '#type'=>'textfield',
+            '#required'=> TRUE,
+            //'#type'=>'textfield',
+            '#disabled' => TRUE,
+            '#default_value' => $usr->name,
+            '#size' => 20,
+        );
+    }
+    $options = array();
+    $grp = array();		//group of users
+    /*
+     * !Add 3-d level of items and make standard function to output form!
+     * !Add check on empty value!
+    */
+
+    foreach($tsk->field_user_group['und'] as $grp) {		//loop task user groups and make array of tids => names
+        $term = taxonomy_term_load($grp['tid']);		//load term
+        $default[] = $grp['tid'];						//remember defaults
+    }
+    //Get parent categories
+    $pars = taxonomy_get_tree(3, 0, 1);		//load a tree of user groups, 1st arg - vocabulary, 2nd - parent under which create list, 3rd - depth, the last arg dropped
+    //taxonomy_get_children($tid, $vid = 0); 
+    foreach ($pars as $parent) {
+        $chlds = taxonomy_get_children($parent->tid);
+        $options[$parent->tid] = $parent->name;
+        if(!empty($chlds)) {
+            foreach($chlds as $child) {
+                $options[$child->tid] = ' - '.$child->name;
+            }
+        }	
+    }
+    unset($pars);
+        $form['task']['user_groups'] = array(
+        '#type' => 'checkboxes',
+        //'#type' => 'select',
+        '#options' => $options,
+        '#multiple' => TRUE,
+        '#title' => t('User groups'),
+        '#default_value' => $default,
+        '#description' => t('Назначение групп пользователей. Можно выбрать до 5 значений'),
+        '#size' => 10,
+    );
+
+    unset($options);
+    unset($term);
+    $options = array();
+    $ctgr = array();
+
+    foreach($tsk->field_category['und'] as $ctgr) {		//loop task categories and make array of tids => names
+        $term = taxonomy_term_load($ctgr['tid']);		//load term
+        $default[] = $ctgr['tid'];
+    }
+    //Get parent categories
+    $pars = taxonomy_get_tree(2, 0, 1);		//load a tree of categories, 1st arg - vocabulary, 2nd - parent under which create list, 3rd - depth, the last arg dropped
+    foreach ($pars as $parent) {
+        $chlds = taxonomy_get_children($parent->tid);
+        $options[$parent->tid] = $parent->name;
+        if(!empty($chlds)) {
+            foreach($chlds as $child) {
+                $options[$child->tid] = ' - '.$child->name;
+
+            }
+        }
+    }
+    unset($pars);
+    $form['task']['categories'] = array(
+        '#type' => 'checkboxes',
+        //'#type' => 'select',
+        '#options' => $options,
+        '#multiple' => TRUE,
+        '#title' => t('Categories'),
+        '#default_value' => $default,
+        '#description' => t('Назначение категорий. Можно выбрать до 5 значений, удерживая кнопку ctrl'),
+        '#size' => 10,
+    );
+    unset($term);
+    unset($options);
+    $pars = taxonomy_get_tree(4, 0, 1);			//load queue vocabulary
+    foreach($pars as $par) {
+        $options[$par->tid] = $par->name;
+    }
+    $term = taxonomy_term_load($tsk->field_queue['und'][0]['tid']);
+    $form['task']['queue'] = array(
+        '#type' => 'select',
+        '#options' => $options,
+        '#title' => t('Очередь'),
+        '#default_value' => $tsk->field_queue['und'][0]['tid'],
+        '#description' => t('Текущая очередь задачи'),
+        '#size' => 1,
+    );
+    unset($term, $options);
+    $pars = taxonomy_get_tree(6, 0, 1); //load status vocabulary
+    foreach($pars as $par) {
+        $options[$par->tid] = $par->name;
+    }
+    $term = taxonomy_term_load($tsk->field_task_status['und'][0]['tid']);
+
+    $form['task']['status'] = array(
+        '#type' => 'select',
+        '#options' => $options,
+        '#title' => t('Статус'),
+        '#default_value' => $tsk->field_task_status['und'][0]['tid'],
+        '#description' => t('Статус задачи'),
+        '#size' => 1,
+    );
+    $form['task']['save'] = array(
+        '#type' => 'submit',
+        '#value' => t('Сохранить'),
+        '#size' => 1,
+    );
+    return $form;	
+}
+
+function task_view_form_access($node) {
+    global $user;
+    if (!empty($user->roles['3']) || $node->uid == $user->uid) { //give access if user is author and if he is admin (2nd - delete?)	
+        return TRUE;
+    }
+    else {
+        for($i=0; $i < count($node->field_user['und']); $i++) {
+            if($node->field_user['und'][$i]['uid'] == $user->uid)
+                return TRUE;
+        }  			
+        return FALSE;
+    }
+}
+function task_view_form_submit($form,&$form_state) {		//SAVE SINGLE TASK
+    $tsk = node_load(arg(1));
+    $tmp = $form_state['values']['enddate'];
+    $dt = strtotime("-6 hour", strtotime("$tmp"));
+    //$dt = date("Y-m-d\TH:i:sP", $dt);			//with time shift
+    $dt = date("Y-m-d\TH:i:s", $dt);
+
+    $tsk->field_date_done['und']['0']['value'] = $dt;
+    $tsk->changed = strtotime("now");
+    $tsk->title = $form_state['values']['title'];
+    foreach($form_state['values']['categories'] as $ctg) {
+        if($ctg != 0)
+            $tsk->field_category['und'][$ctg] = $ctg;
+    }
+    //преобразование в одномерный простой массив
+    $fug = array();
+    foreach($tsk->field_user_group['und'] as $task)
+        $fug[$task['tid']] = $task['tid'];
+    //unset($tsk->field_user_group['und']);		//clear user groups
+    foreach($form_state['values']['user_groups'] as $ugrp) {
+        if(($ugrp != 0) && (!in_array($ugrp, $fug))	)	
+            $tsk->field_user_group['und'][]['tid'] = $ugrp;
+    }
+    node_save($tsk);
+    drupal_set_message("Task was successfully saved!");
+}
+
+function tasks_view_form($form, &$form_state) {			//форма для СПИСКА задач (доделать...)
+    //$tsk = node_load(arg(1));
+    $form['example'] = array(
+        '#type' => 'fieldset',
+        '#title' => 'Просмотр задач',
+        '#collapsible' => FALSE,
+    );                
+    $form['example']['1'] = array(
+        '#title'=>'Код пользователя',
+        '#type'=>'select',
+        '#options'=> array(1,2),
+        '#default_value'=> 1,               
+        '#required'=> TRUE,
+        '#description'=> '',
+    );
+    $form['example']['2'] = array(
+        '#title'=>'Тип материала',
+        '#type'=>'select',
+        '#options'=> array(1,2),
+        '#required'=> TRUE,
+        '#default_value'=> 1,
+    );
+    return $form;
+}
+
+function tasks_view_form_access() {
+    global $user;
+    if (!empty($user->roles['3'])) {
+        return TRUE;
+    }
+    else
+        return false;
+}
